@@ -1,6 +1,6 @@
 // Keeps the app working inside the library when there is no signal.
 // Bump VERSION whenever you change index.html, styles.css, app.js or data/books.json.
-const VERSION = "v3";
+const VERSION = "v4";
 const CACHE = `libros-${VERSION}`;
 const CORE = [
   "./",

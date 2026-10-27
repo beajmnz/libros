@@ -1,6 +1,6 @@
 # 100 libros · La Isla Misteriosa
 
-The four 2026 reading guides (Prelectores, Primeros, Grandes and Jóvenes lectores), checked against the catalog of Biblioteca La Isla Misteriosa in Torrejón de Ardoz. Use it on your phone at the library: pick an age group, see which books are there, and tap the star when a book has been read.
+The four 2026 reading guides (Prelectores, Primeros, Grandes and Jóvenes lectores), checked against the catalog of Biblioteca La Isla Misteriosa in Torrejón de Ardoz. Use it on your phone at the library: pick an age group, see which books are there, tap the star when a book has been read, and save the ones you loved as gift ideas.
 
 ## Put it on GitHub Pages
 
@@ -22,10 +22,21 @@ On the phone, open that address and use **Add to Home Screen** (Safari: Share bu
 
 Status values in `books.json` (`s`): `Sí` the library has it, `Parcial` only another volume or edition, `Revisar` unclear, `No` not in the catalog. Checked in October 2026; the library's collection changes over time.
 
-## Stars
+## Stars and reviews
 
-Stars are saved on each phone. To copy them to another phone, open **Pasar las estrellas a otro móvil** at the bottom of the page, copy the code, and paste it on the other phone. *El pequeño conejo blanco* starts with a star because it is already in the library loan history.
+- **Star:** tap it when a book has been read.
+- **Valorar:** opens a small review: 1 to 5 hearts, **Para regalar** to save it as a present idea, and an optional note.
+- **Filters:** *Favoritos* lists books with 4 or 5 hearts in the current age group. *Para regalar* lists every gift idea from all four guides.
+- **Search:** also finds words in your notes.
+
+Everything is saved on the phone only: no accounts, nothing sent to a server. *El pequeño conejo blanco* starts with a star because it is already in the library loan history.
+
+## Sharing with a partner
+
+Tap the share button (top right) and send the link, for example by WhatsApp. When the other person opens it, the page offers to merge the two lists. Each book's star and review carry the time they last changed, so when both phones changed the same book, the most recent change wins (removing a star included). The link holds the whole list, compressed, in the part after `#`, which browsers don't send to the server.
+
+Merging is not live: after making changes, share again. Codes from the first version of the app (`b001,b045,…`) can still be pasted into **Compartir con tu pareja** at the bottom of the page.
 
 ## Changing the data
 
-Edit `data/books.json`, then open `sw.js` and change `VERSION` (for example to `"v2"`) so phones pick up the new list.
+Edit `data/books.json`, then open `sw.js` and increase `VERSION` (for example from `"v4"` to `"v5"`) so phones pick up the new list.

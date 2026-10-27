@@ -24,6 +24,9 @@
         <h1>libros para leer antes de crecer</h1>
         <p>Biblioteca La Isla Misteriosa · Torrejón</p>
       </div>
+      <button type="button" class="share-btn" id="share" aria-label="Compartir nuestra lista" title="Compartir nuestra lista">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="m8.2 10.8 7.6-4M8.2 13.2l7.6 4"/></svg>
+      </button>
     </div>
 
     <nav class="groups" id="groups" aria-label="Grupo de edad"></nav>
@@ -38,6 +41,7 @@
   </header>
 
   <main>
+    <section class="incoming" id="incoming" hidden aria-live="polite"></section>
     <p class="summary" id="summary" aria-live="polite"></p>
     <ul class="list" id="list"></ul>
     <p class="empty" id="empty" hidden></p>
@@ -53,21 +57,24 @@
       <p class="fine">Comprobado en el catálogo de las Bibliotecas de Madrid en octubre de 2026. Portadas de Open Library, Casa del Libro, Amazon y las editoriales.</p>
     </details>
 
-    <details class="more" id="backup">
-      <summary>Pasar las estrellas a otro móvil</summary>
-      <p>Las estrellas se guardan en este móvil. Para llevarlas a otro, copia el código y pégalo allí.</p>
+    <details class="more" id="share-box">
+      <summary>Compartir con tu pareja</summary>
+      <p>Las estrellas y reseñas se guardan en este móvil, sin cuentas ni contraseñas. Para tener la misma lista en dos móviles, toca el botón de compartir de arriba a la derecha y envía el enlace. Al abrirlo en el otro móvil, las dos listas se unen. Si los dos habéis cambiado el mismo libro, gana el cambio más reciente.</p>
+      <p>Después de hacer cambios, volved a compartir para seguir igual.</p>
       <div class="backup-row">
-        <button type="button" id="copy">Copiar código</button>
-        <span id="copy-msg" class="fine" aria-live="polite"></span>
+        <button type="button" id="share-copy">Copiar enlace</button>
       </div>
-      <label for="import-text" class="fine">Pegar un código:</label>
-      <textarea id="import-text" rows="2" placeholder="b001,b045,…"></textarea>
+      <textarea id="share-out" rows="3" readonly hidden aria-label="Enlace para compartir"></textarea>
+      <label for="share-paste" class="fine">¿Te han enviado un enlace o un código? Pégalo aquí:</label>
+      <textarea id="share-paste" rows="2" placeholder="https://…#lista=…"></textarea>
       <div class="backup-row">
-        <button type="button" id="import">Añadir estas estrellas</button>
-        <span id="import-msg" class="fine" aria-live="polite"></span>
+        <button type="button" id="share-paste-go">Unir con mi lista</button>
+        <span id="share-msg" class="fine" aria-live="polite"></span>
       </div>
     </details>
   </main>
+
+  <div class="toast" id="toast" role="status" hidden></div>
 
   <script src="app.js"></script>
 </body>
