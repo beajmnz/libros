@@ -3,7 +3,6 @@
   "short_name": "100 libros",
   "description": "Las guías de lectura 2026 con lo que hay en la Biblioteca La Isla Misteriosa.",
   "lang": "es",
-  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "background_color": "#f5f6f9",

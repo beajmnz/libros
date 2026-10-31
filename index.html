@@ -19,12 +19,12 @@
 <body>
   <header class="top">
     <div class="brand">
-      <span class="brand-num">100</span>
+      <span class="brand-num" id="brand-num">100</span>
       <div class="brand-text">
-        <h1>libros para leer antes de crecer</h1>
-        <p>Biblioteca La Isla Misteriosa · Torrejón</p>
+        <h1 id="brand-title">libros para leer antes de crecer</h1>
+        <p id="brand-place"></p>
       </div>
-      <button type="button" class="share-btn" id="share" aria-label="Compartir nuestra lista" title="Compartir nuestra lista">
+      <button type="button" class="share-btn" id="share" aria-label="Invitar a la familia" title="Invitar a la familia">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="m8.2 10.8 7.6-4M8.2 13.2l7.6 4"/></svg>
       </button>
     </div>
@@ -41,34 +41,35 @@
   </header>
 
   <main>
-    <section class="incoming" id="incoming" hidden aria-live="polite"></section>
+    <p class="notice" id="notice" hidden></p>
     <p class="summary" id="summary" aria-live="polite"></p>
+    <p class="sync" id="sync" aria-live="polite" hidden></p>
     <ul class="list" id="list"></ul>
     <p class="empty" id="empty" hidden></p>
 
     <details class="more">
       <summary>Qué significa cada etiqueta</summary>
       <dl class="legend">
-        <div><dt><span class="pill s-si">En la Isla</span></dt><dd>La biblioteca tiene el libro (o tomos de la serie). Puede estar prestado.</dd></div>
+        <div><dt><span class="pill s-si" id="legend-si">En la biblioteca</span></dt><dd>La biblioteca tiene el libro (o tomos de la serie). Puede estar prestado.</dd></div>
         <div><dt><span class="pill s-parcial">Otro de la serie</span></dt><dd>Solo hay libros parecidos: otro tomo, otra edición o una adaptación.</dd></div>
         <div><dt><span class="pill s-revisar">Preguntar</span></dt><dd>No está claro. Mejor preguntar en el mostrador.</dd></div>
-        <div><dt><span class="pill s-no">No está</span></dt><dd>No aparece en el catálogo de La Isla Misteriosa.</dd></div>
+        <div><dt><span class="pill s-no">No está</span></dt><dd id="legend-no">No aparece en el catálogo de la biblioteca.</dd></div>
       </dl>
-      <p class="fine">Comprobado en el catálogo de las Bibliotecas de Madrid en octubre de 2026. Portadas de Open Library, Casa del Libro, Amazon y las editoriales.</p>
+      <p class="fine"><span id="legend-source"></span> Portadas de Open Library, Casa del Libro, Amazon y las editoriales.</p>
     </details>
 
     <details class="more" id="share-box">
-      <summary>Compartir con tu pareja</summary>
-      <p>Las estrellas y reseñas se guardan en este móvil, sin cuentas ni contraseñas. Para tener la misma lista en dos móviles, toca el botón de compartir de arriba a la derecha y envía el enlace. Al abrirlo en el otro móvil, las dos listas se unen. Si los dos habéis cambiado el mismo libro, gana el cambio más reciente.</p>
-      <p>Después de hacer cambios, volved a compartir para seguir igual.</p>
+      <summary>Compartir con la familia</summary>
+      <p>Vuestra lista está en una hoja de Google. Quien tenga el enlace ve los mismos libros, estrellas y reseñas, y sus cambios llegan a todos. Compártelo solo con quien quieras: con él se puede cambiar la lista.</p>
       <div class="backup-row">
-        <button type="button" id="share-copy">Copiar enlace</button>
+        <button type="button" id="share-copy" hidden>Copiar enlace de la familia</button>
+        <a class="sheet-link" id="sheet-link" href="#" target="_blank" rel="noopener" hidden>Abrir la hoja de Google</a>
       </div>
       <textarea id="share-out" rows="3" readonly hidden aria-label="Enlace para compartir"></textarea>
-      <label for="share-paste" class="fine">¿Te han enviado un enlace o un código? Pégalo aquí:</label>
-      <textarea id="share-paste" rows="2" placeholder="https://…#lista=…"></textarea>
+      <label for="share-paste" class="fine">¿Te han enviado el enlace de una lista? Pégalo aquí:</label>
+      <textarea id="share-paste" rows="2" placeholder="https://…?lista=…"></textarea>
       <div class="backup-row">
-        <button type="button" id="share-paste-go">Unir con mi lista</button>
+        <button type="button" id="share-connect">Conectar esta lista</button>
         <span id="share-msg" class="fine" aria-live="polite"></span>
       </div>
     </details>

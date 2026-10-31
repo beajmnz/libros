@@ -1,38 +1,22 @@
 "use strict";
 
-const GROUPS = [
-  { id: "pre", short: "0–4", name: "Prelectores" },
-  { id: "pri", short: "5+", name: "Primeros" },
-  { id: "gra", short: "8+", name: "Grandes" },
-  { id: "jov", short: "11+", name: "Jóvenes" },
-];
-const GROUP_NAME = Object.fromEntries(GROUPS.map(g => [g.id, g.name]));
+/*
+ * The books, the settings, the stars and the reviews live in a Google Sheet.
+ * A small Apps Script in that sheet (apps-script/Code.gs) is the bridge: each
+ * family has its own sheet and script, and opens the site with
+ * ?lista=<script address>. Without that link the site shows the bundled list
+ * (data/books.json) and keeps changes on the phone until a list is connected.
+ */
 
-const STATUS = {
-  "Sí": { label: "En la Isla", cls: "s-si" },
-  "Parcial": { label: "Otro de la serie", cls: "s-parcial" },
-  "Revisar": { label: "Preguntar", cls: "s-revisar" },
-  "No": { label: "No está", cls: "s-no" },
-};
-
-// `all: true` filters look across the four guides, not just the selected age group.
-const FILTERS = [
-  { id: "isla", label: "En la Isla", test: b => b.s === "Sí" },
-  { id: "quiza", label: "Quizá", test: b => b.s === "Parcial" || b.s === "Revisar" },
-  { id: "pendientes", label: "Sin leer", test: b => !isRead(b.id) },
-  { id: "leidos", label: "Leídos", test: b => isRead(b.id) },
-  { id: "favoritos", label: "Favoritos", test: b => rating(b.id) >= 4, sort: byRating },
-  { id: "regalos", label: "Para regalar", test: b => isGift(b.id), all: true, sort: byRating },
-  { id: "todos", label: "Todos", test: () => true },
-];
-
-// Books already read when the list was made (from the library loan history).
-const STARTING_READ = ["b132"];
-
-const STORE_STATE = "libros.estado.v2";
-const STORE_OLD_READ = "libros.leidos.v1";
+const STORE_LIST = "libros.lista.v1";
+const STORE_DATA = "libros.datos.v3";
+const STORE_PENDING = "libros.pendiente.v3";
+const STORE_MOVED = "libros.migrado.v3";
 const STORE_PREFS = "libros.prefs.v1";
-const SHARE_KEY = "lista";
+const STORE_OLD_STATE = "libros.estado.v2";
+const STORE_OLD_READ = "libros.leidos.v1";
+
+const REFRESH_EVERY = 2 * 60 * 1000;
 
 const store = {
   get(key, fallback) {
@@ -42,52 +26,83 @@ const store = {
     } catch { return fallback; }
   },
   set(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage blocked: changes last for this visit only */ }
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage full or blocked: this visit only */ }
   },
 };
 
-/*
- * state.read[id]  = [1 or 0, time]            star on/off and when it last changed
- * state.rev[id]   = { r: 0–5, g: 0|1, n: "", t: time }   hearts, gift idea, note
- * Times let two phones merge: for each book, the most recent change wins.
- */
-function loadState() {
-  const saved = store.get(STORE_STATE, null);
-  if (saved && saved.read && saved.rev) return saved;
-  const oldRead = store.get(STORE_OLD_READ, STARTING_READ);
-  const read = {};
-  for (const id of oldRead) read[id] = [1, 0];
-  return { read, rev: {} };
-}
-
-const state = loadState();
-const prefs = Object.assign({ group: "pre", filter: "isla" }, store.get(STORE_PREFS, {}));
-let books = [];
+const prefs = Object.assign({ group: "", filter: "isla" }, store.get(STORE_PREFS, {}));
+let data = { settings: {}, books: [] };
+let pending = store.get(STORE_PENDING, {});   // changes not yet saved in the sheet, by book id
+let listUrl = "";
 let query = "";
 let openEditor = null;
+let lastRefresh = 0;
+let flushing = false;
+let saveFailed = false;
+let flushTimer;
 
-function saveState() { store.set(STORE_STATE, state); }
 function savePrefs() { store.set(STORE_PREFS, prefs); }
+function savePending() { store.set(STORE_PENDING, pending); }
 
-function isRead(id) { return state.read[id]?.[0] === 1; }
-function review(id) { return state.rev[id] || { r: 0, g: 0, n: "", t: 0 }; }
-function rating(id) { return review(id).r; }
-function isGift(id) { return review(id).g === 1; }
-function hasReview(id) { const r = review(id); return r.r > 0 || r.g === 1 || r.n !== ""; }
-function byRating(a, b) { return rating(b.id) - rating(a.id); }
+/* ---------- Reading a book, with changes not yet saved applied on top ---------- */
 
-function setRead(id, on) { state.read[id] = [on ? 1 : 0, Date.now()]; saveState(); }
-function setReview(id, patch) {
-  const next = Object.assign({}, review(id), patch, { t: Date.now() });
-  next.n = (next.n || "").slice(0, 280);
-  state.rev[id] = next;
-  saveState();
+const books = () => data.books;
+function view(b) { return Object.assign({}, b, pending[b.id]); }
+const isRead = b => view(b).read === true;
+const hearts = b => view(b).hearts || 0;
+const isGift = b => view(b).gift === true;
+const reviewText = b => view(b).review || "";
+const hasReview = b => hearts(b) > 0 || isGift(b) || reviewText(b) !== "";
+
+function change(b, patch) {
+  pending[b.id] = Object.assign({}, pending[b.id], patch);
+  savePending();
+  queueFlush();
+}
+
+/* ---------- Names that come from the sheet ---------- */
+
+const setting = (key, fallback) => data.settings[key] || fallback;
+const library = () => setting("Biblioteca", "la biblioteca");
+const shortName = () => setting("Nombre corto", "la biblioteca");
+const inLibrary = () => `En ${shortName()}`;
+
+const STATUS = () => ({
+  "Sí": { label: inLibrary(), cls: "s-si" },
+  "Parcial": { label: "Otro de la serie", cls: "s-parcial" },
+  "Revisar": { label: "Preguntar", cls: "s-revisar" },
+  "No": { label: "No está", cls: "s-no" },
+});
+
+// "Primeros lectores (5+)" becomes { name: "Primeros", short: "5+" }.
+function groupParts(group) {
+  const m = group.match(/\(([^)]*)\)/);
+  const short = m ? m[1].replace(/\s*años/i, "").replace(/(\d)-(\d)/, "$1–$2").trim() : "";
+  return { name: group.replace(/\s*\(.*$/, "").split(" ")[0], short };
+}
+function groups() { return [...new Set(books().map(b => b.g))]; }
+
+function filters() {
+  return [
+    { id: "isla", label: inLibrary(), test: b => b.s === "Sí" },
+    { id: "quiza", label: "Quizá", test: b => b.s === "Parcial" || b.s === "Revisar" },
+    { id: "pendientes", label: "Sin leer", test: b => !isRead(b) },
+    { id: "leidos", label: "Leídos", test: isRead },
+    { id: "favoritos", label: "Favoritos", test: b => hearts(b) >= 4, sort: byHearts },
+    { id: "regalos", label: "Para regalar", test: isGift, all: true, sort: byHearts },
+    { id: "todos", label: "Todos", test: () => true },
+  ];
+}
+function byHearts(a, b) { return hearts(b) - hearts(a); }
+function currentFilter() {
+  const list = filters();
+  return list.find(x => x.id === prefs.filter) || list[0];
 }
 
 const $ = id => document.getElementById(id);
 const els = {
-  groups: $("groups"), chips: $("chips"), q: $("q"), list: $("list"),
-  summary: $("summary"), empty: $("empty"), incoming: $("incoming"), toast: $("toast"),
+  groups: $("groups"), chips: $("chips"), q: $("q"), list: $("list"), summary: $("summary"),
+  empty: $("empty"), notice: $("notice"), sync: $("sync"), toast: $("toast"),
 };
 
 const STAR = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l2.75 5.6 6.15.9-4.45 4.34 1.05 6.13L12 16.88l-5.5 2.89 1.05-6.13L3.1 9.3l6.15-.9z"/></svg>';
@@ -105,17 +120,37 @@ function toast(msg) {
   toast.timer = setTimeout(() => { els.toast.hidden = true; }, 3200);
 }
 
+function renderBranding() {
+  const lib = library(), town = setting("Localidad", "");
+  $("brand-num").textContent = setting("Número", "100");
+  $("brand-title").textContent = setting("Título", "libros para leer antes de crecer");
+  $("brand-place").textContent = `Biblioteca ${lib}${town ? " · " + town : ""}`;
+  document.title = `${setting("Número", "100")} libros · ${lib}`;
+  $("legend-si").textContent = inLibrary();
+  $("legend-no").textContent = `No aparece en el catálogo de ${lib}.`;
+  $("legend-source").textContent = `Comprobado en ${setting("Comprobado en", "el catálogo de la biblioteca")}.`;
+  const link = $("sheet-link");
+  link.hidden = !data.sheetUrl;
+  if (data.sheetUrl) link.href = data.sheetUrl;
+}
+
 /* ---------- Header: age groups and filters ---------- */
 
 function renderGroups() {
+  const list = groups();
+  if (!list.includes(prefs.group)) prefs.group = list[0] || "";
   els.groups.innerHTML = "";
-  for (const g of GROUPS) {
+  els.groups.style.setProperty("--groups", Math.max(list.length, 1));
+  for (const g of list) {
+    const { name, short } = groupParts(g);
     const b = document.createElement("button");
     b.type = "button";
-    b.setAttribute("aria-pressed", String(prefs.group === g.id));
-    b.innerHTML = `<b>${g.short}</b><span>${g.name}</span>`;
+    b.setAttribute("aria-pressed", String(prefs.group === g));
+    const big = document.createElement("b"); big.textContent = short || name;
+    const small = document.createElement("span"); small.textContent = short ? name : "";
+    b.append(big, small);
     b.addEventListener("click", () => {
-      prefs.group = g.id; savePrefs(); renderGroups(); renderChips(); renderList();
+      prefs.group = g; savePrefs(); renderGroups(); renderChips(); renderList();
       window.scrollTo({ top: 0 });
     });
     els.groups.append(b);
@@ -123,13 +158,13 @@ function renderGroups() {
 }
 
 function renderChips() {
-  const inGroup = books.filter(b => b.g === prefs.group);
+  const inGroup = books().filter(b => b.g === prefs.group);
   els.chips.innerHTML = "";
-  for (const f of FILTERS) {
+  for (const f of filters()) {
     const b = document.createElement("button");
     b.type = "button";
     b.setAttribute("aria-pressed", String(prefs.filter === f.id));
-    b.textContent = `${f.label} ${(f.all ? books : inGroup).filter(f.test).length}`;
+    b.textContent = `${f.label} ${(f.all ? books() : inGroup).filter(f.test).length}`;
     b.addEventListener("click", () => {
       prefs.filter = f.id; savePrefs(); renderChips(); renderList();
     });
@@ -139,28 +174,53 @@ function renderChips() {
 
 /* ---------- Book cards ---------- */
 
+function coverElement(b) {
+  const blank = () => {
+    const box = document.createElement("div");
+    box.className = "cover blank";
+    box.textContent = b.t.replace(/^[¡¿"“]+/, "").charAt(0);
+    box.setAttribute("aria-hidden", "true");
+    return box;
+  };
+  const local = `covers/${b.id}.jpg`;
+  const img = document.createElement("img");
+  img.className = "cover";
+  img.alt = "";
+  img.loading = "lazy";
+  img.decoding = "async";
+  img.referrerPolicy = "no-referrer";
+  img.width = 64; img.height = 88;
+  // The link in the sheet comes first; the bundled thumbnail covers offline use and broken links.
+  const remote = /^https:\/\//i.test(b.cover || "") ? b.cover : "";
+  img.src = remote || local;
+  img.addEventListener("error", () => {
+    if (img.getAttribute("src") === local) img.replaceWith(blank());
+    else img.src = local;
+  });
+  return img;
+}
+
 function reviewSummary(b) {
   const box = document.createElement("div");
   box.className = "review-summary";
-  const r = review(b.id);
-  if (!hasReview(b.id)) { box.hidden = true; return box; }
-  if (r.r > 0) {
-    const hearts = document.createElement("span");
-    hearts.className = "hearts-small";
-    hearts.setAttribute("aria-label", `${r.r} de 5 corazones`);
-    hearts.innerHTML = HEART.repeat(r.r);
-    box.append(hearts);
+  if (!hasReview(b)) { box.hidden = true; return box; }
+  if (hearts(b) > 0) {
+    const h = document.createElement("span");
+    h.className = "hearts-small";
+    h.setAttribute("aria-label", `${hearts(b)} de 5 corazones`);
+    h.innerHTML = HEART.repeat(hearts(b));
+    box.append(h);
   }
-  if (r.g === 1) {
+  if (isGift(b)) {
     const g = document.createElement("span");
     g.className = "gift-tag";
     g.innerHTML = GIFT + "<span>Para regalar</span>";
     box.append(g);
   }
-  if (r.n) {
+  if (reviewText(b)) {
     const n = document.createElement("p");
     n.className = "review-note";
-    n.textContent = r.n;
+    n.textContent = reviewText(b);
     box.append(n);
   }
   return box;
@@ -175,10 +235,10 @@ function reviewEditor(b, onChange) {
   q.className = "editor-label";
   q.textContent = "¿Os gustó?";
 
-  const hearts = document.createElement("div");
-  hearts.className = "hearts";
-  hearts.setAttribute("role", "group");
-  hearts.setAttribute("aria-label", "Valoración de 1 a 5");
+  const heartRow = document.createElement("div");
+  heartRow.className = "hearts";
+  heartRow.setAttribute("role", "group");
+  heartRow.setAttribute("aria-label", "Valoración de 1 a 5");
   const heartBtns = [];
   for (let n = 1; n <= 5; n++) {
     const h = document.createElement("button");
@@ -186,11 +246,11 @@ function reviewEditor(b, onChange) {
     h.innerHTML = HEART;
     h.setAttribute("aria-label", `${n} de 5`);
     h.addEventListener("click", () => {
-      setReview(b.id, { r: rating(b.id) === n ? 0 : n });
+      change(b, { hearts: hearts(b) === n ? 0 : n });
       paint(); onChange();
     });
     heartBtns.push(h);
-    hearts.append(h);
+    heartRow.append(h);
   }
 
   const gift = document.createElement("button");
@@ -198,7 +258,7 @@ function reviewEditor(b, onChange) {
   gift.className = "gift-toggle";
   gift.innerHTML = GIFT + "<span>Para regalar</span>";
   gift.addEventListener("click", () => {
-    setReview(b.id, { g: isGift(b.id) ? 0 : 1 });
+    change(b, { gift: !isGift(b) });
     paint(); onChange();
   });
 
@@ -213,9 +273,14 @@ function reviewEditor(b, onChange) {
   note.maxLength = 280;
   note.placeholder = "Por qué nos gustó, para quién sería un buen regalo…";
   let noteTimer;
+  const saveNote = () => {
+    clearTimeout(noteTimer);
+    const text = note.value.trim();
+    if (text !== reviewText(b)) { change(b, { review: text }); onChange(); }
+  };
   note.addEventListener("input", () => {
     clearTimeout(noteTimer);
-    noteTimer = setTimeout(() => { setReview(b.id, { n: note.value.trim() }); onChange(); }, 400);
+    noteTimer = setTimeout(saveNote, 500);
   });
 
   const done = document.createElement("button");
@@ -225,22 +290,18 @@ function reviewEditor(b, onChange) {
 
   const row = document.createElement("div");
   row.className = "editor-row";
-  row.append(hearts, gift);
+  row.append(heartRow, gift);
   ed.append(q, row, lbl, note, done);
 
   function paint() {
-    const r = review(b.id);
-    heartBtns.forEach((h, i) => h.setAttribute("aria-pressed", String(i < r.r)));
-    gift.setAttribute("aria-pressed", String(r.g === 1));
-    if (document.activeElement !== note) note.value = r.n;
+    heartBtns.forEach((h, i) => h.setAttribute("aria-pressed", String(i < hearts(b))));
+    gift.setAttribute("aria-pressed", String(isGift(b)));
+    if (document.activeElement !== note) note.value = reviewText(b);
   }
   paint();
   ed.paint = paint;
   ed.done = done;
-  ed.flushNote = () => {
-    clearTimeout(noteTimer);
-    if (note.value.trim() !== review(b.id).n) { setReview(b.id, { n: note.value.trim() }); onChange(); }
-  };
+  ed.saveNote = saveNote;
   return ed;
 }
 
@@ -248,40 +309,25 @@ function bookItem(b, showGroup) {
   const li = document.createElement("li");
   li.className = "book";
 
-  let cover;
-  if (b.cv) {
-    cover = document.createElement("img");
-    cover.className = "cover";
-    cover.src = `covers/${b.id}.jpg`;
-    cover.alt = "";
-    cover.loading = "lazy";
-    cover.decoding = "async";
-    cover.width = 64; cover.height = 88;
-  } else {
-    cover = document.createElement("div");
-    cover.className = "cover blank";
-    cover.textContent = b.t.replace(/^[¡¿"“]+/, "").charAt(0);
-    cover.setAttribute("aria-hidden", "true");
-  }
-
   const info = document.createElement("div");
   info.className = "info";
-  const st = STATUS[b.s] || STATUS.No;
+  const statuses = STATUS();
+  const st = statuses[b.s] || statuses.No;
   const h = document.createElement("h2"); h.textContent = b.t;
   const a = document.createElement("p"); a.className = "author"; a.textContent = b.a;
   const meta = document.createElement("div"); meta.className = "meta";
   const pill = document.createElement("span"); pill.className = `pill ${st.cls}`; pill.textContent = st.label;
   meta.append(pill);
   const tag = document.createElement("span"); tag.className = "tag";
-  tag.textContent = showGroup ? `${GROUP_NAME[b.g]} · nº ${b.n}` : `nº ${b.n}`;
+  const number = b.n !== "" ? `nº ${b.n}` : "";
+  tag.textContent = showGroup ? [groupParts(b.g).name, number].filter(Boolean).join(" · ") : number;
   meta.append(tag);
   info.append(h, a, meta);
 
-  const cleanCatalog = b.c && b.c !== b.t ? b.c : "";
-  if (cleanCatalog && b.s !== "No") {
+  if (b.c && b.c !== b.t && b.s !== "No") {
     const c = document.createElement("p"); c.className = "catalog";
     const lbl = document.createElement("span");
-    lbl.textContent = b.c.includes("|") ? "En la Isla: " : "Allí se llama: ";
+    lbl.textContent = b.c.includes("|") ? `${inLibrary()}: ` : "Allí se llama: ";
     c.append(lbl, b.c.split(" | ").join(" · "));
     info.append(c);
   }
@@ -305,11 +351,11 @@ function bookItem(b, showGroup) {
   star.innerHTML = STAR;
 
   const refreshCard = () => {
-    const on = isRead(b.id);
+    const on = isRead(b);
     star.setAttribute("aria-pressed", String(on));
     star.setAttribute("aria-label", on ? `Quitar «${b.t}» de leídos` : `Marcar «${b.t}» como leído`);
     li.classList.toggle("is-read", on);
-    rate.innerHTML = HEART + `<span>${hasReview(b.id) ? "Editar reseña" : "Valorar"}</span>`;
+    rate.innerHTML = HEART + `<span>${hasReview(b) ? "Editar reseña" : "Valorar"}</span>`;
     const fresh = reviewSummary(b);
     summary.replaceWith(fresh);
     summary = fresh;
@@ -317,7 +363,7 @@ function bookItem(b, showGroup) {
 
   const editor = reviewEditor(b, () => { refreshCard(); renderChips(); renderSummary(); });
   const close = () => {
-    editor.flushNote();
+    editor.saveNote();
     editor.hidden = true;
     rate.setAttribute("aria-expanded", "false");
     if (openEditor === close) openEditor = null;
@@ -333,39 +379,40 @@ function bookItem(b, showGroup) {
   editor.done.addEventListener("click", () => { close(); rate.focus(); });
 
   star.addEventListener("click", () => {
-    setRead(b.id, !isRead(b.id));
+    change(b, { read: !isRead(b) });
     refreshCard(); renderSummary(); renderChips();
   });
   refreshCard();
 
-  li.append(cover, info, star, editor);
+  li.append(coverElement(b), info, star, editor);
   return li;
 }
 
 function visibleBooks() {
   if (query) {
     const q = norm(query);
-    return books.filter(b => norm(b.t + " " + b.a + " " + b.c + " " + review(b.id).n).includes(q));
+    return books().filter(b => norm(`${b.t} ${b.a} ${b.c} ${reviewText(b)}`).includes(q));
   }
   const f = currentFilter();
-  const list = books.filter(b => (f.all || b.g === prefs.group) && f.test(b));
+  const list = books().filter(b => (f.all || b.g === prefs.group) && f.test(b));
   return f.sort ? list.sort(f.sort) : list;
 }
 
-function currentFilter() { return FILTERS.find(x => x.id === prefs.filter) || FILTERS[0]; }
-
 function renderSummary() {
   const f = currentFilter();
-  if (query) { els.summary.textContent = "Buscando en las cuatro guías"; return; }
+  if (query) { els.summary.textContent = "Buscando en todas las guías"; return; }
   if (f.all) {
-    const n = books.filter(f.test).length;
-    els.summary.textContent = `Ideas para regalar: ${n} ${n === 1 ? "libro" : "libros"} de las cuatro guías`;
+    const n = books().filter(f.test).length;
+    els.summary.textContent = `Ideas para regalar: ${n} ${n === 1 ? "libro" : "libros"} de todas las guías`;
     return;
   }
-  const inGroup = books.filter(b => b.g === prefs.group);
-  const read = inGroup.filter(b => isRead(b.id)).length;
+  const inGroup = books().filter(b => b.g === prefs.group);
+  const read = inGroup.filter(isRead).length;
   const there = inGroup.filter(b => b.s === "Sí").length;
-  els.summary.innerHTML = `${GROUP_NAME[prefs.group]}: <strong>★ ${read} de ${inGroup.length}</strong> leídos · ${there} en La Isla Misteriosa`;
+  els.summary.textContent = "";
+  const strong = document.createElement("strong");
+  strong.textContent = `★ ${read} de ${inGroup.length}`;
+  els.summary.append(`${groupParts(prefs.group).name}: `, strong, ` leídos · ${there} en ${library()}`);
 }
 
 function renderList() {
@@ -386,157 +433,185 @@ function renderList() {
   renderSummary();
 }
 
-/* ---------- Sharing between phones ---------- */
-
-function b64url(bytes) {
-  let s = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-function unb64url(s) {
-  const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/"));
-  return Uint8Array.from(bin, c => c.charCodeAt(0));
-}
-async function pipe(bytes, stream) {
-  const out = new Blob([bytes]).stream().pipeThrough(stream);
-  return new Uint8Array(await new Response(out).arrayBuffer());
+function renderAll() {
+  renderBranding();
+  renderGroups();
+  renderChips();
+  renderList();
 }
 
-function packState() {
-  const num = id => Number(id.slice(1));
-  return {
-    v: 2,
-    r: Object.entries(state.read).map(([id, [on, t]]) => [num(id), on, Math.round(t / 1000)]),
-    w: Object.entries(state.rev).map(([id, x]) => [num(id), x.r, x.g, x.n, Math.round(x.t / 1000)]),
-  };
-}
-function unpackState(p) {
-  if (!p || p.v !== 2 || !Array.isArray(p.r) || !Array.isArray(p.w)) throw new Error("formato");
-  const id = n => "b" + String(n).padStart(3, "0");
-  const read = {}, rev = {};
-  for (const [n, on, t] of p.r) read[id(n)] = [on ? 1 : 0, t * 1000];
-  for (const [n, r, g, note, t] of p.w) rev[id(n)] = { r: Math.max(0, Math.min(5, r | 0)), g: g ? 1 : 0, n: String(note || "").slice(0, 280), t: t * 1000 };
-  return { read, rev };
+/* ---------- Talking to the sheet ---------- */
+
+function setSync(text) { els.sync.textContent = text; els.sync.hidden = !text; }
+
+function showSyncState() {
+  const waiting = Object.keys(pending).length;
+  if (!listUrl || !waiting) { setSync(""); return; }
+  setSync(navigator.onLine === false || saveFailed
+    ? `Sin conexión: ${waiting} ${waiting === 1 ? "cambio se guardará" : "cambios se guardarán"} al volver la señal.`
+    : "Guardando…");
 }
 
-async function encodeState() {
-  const json = new TextEncoder().encode(JSON.stringify(packState()));
-  if ("CompressionStream" in window) {
-    try { return "z" + b64url(await pipe(json, new CompressionStream("deflate-raw"))); } catch { /* fall through */ }
+async function fetchList() {
+  const res = await fetch(listUrl, { redirect: "follow" });
+  const body = await res.json();
+  if (!body.ok) throw new Error(body.error || "La lista no respondió.");
+  return body;
+}
+
+async function refresh({ force = false } = {}) {
+  if (!listUrl) return;
+  if (!force && Date.now() - lastRefresh < REFRESH_EVERY) return;
+  // Never swap the list under someone writing a review; the next refresh will catch up.
+  if (openEditor) return;
+  lastRefresh = Date.now();
+  try {
+    const body = await fetchList();
+    if (openEditor) { lastRefresh = 0; return; }
+    data = { settings: body.settings || {}, books: body.books || [], sheetUrl: body.sheetUrl };
+    store.set(STORE_DATA, data);
+    els.notice.hidden = true;
+    renderAll();
+  } catch {
+    if (navigator.onLine !== false && !books().length) {
+      showNotice("No se pudo abrir tu lista. Comprueba que el enlace es el que os enviaron y que el script sigue publicado.");
+    }
   }
-  return "j" + b64url(json);
-}
-async function decodeState(code) {
-  const kind = code[0], bytes = unb64url(code.slice(1));
-  const raw = kind === "z" ? await pipe(bytes, new DecompressionStream("deflate-raw")) : bytes;
-  return unpackState(JSON.parse(new TextDecoder().decode(raw)));
 }
 
-async function shareLink() {
-  return `${location.origin}${location.pathname}#${SHARE_KEY}=${await encodeState()}`;
-}
-
-// What merging `other` would change here: books whose newer version comes from the other phone.
-function diff(other) {
-  const known = new Set(books.map(b => b.id));
-  const read = Object.keys(other.read).filter(id => known.has(id) && other.read[id][1] > (state.read[id]?.[1] ?? -1) && other.read[id][0] !== (isRead(id) ? 1 : 0));
-  const rev = Object.keys(other.rev).filter(id => known.has(id) && other.rev[id].t > review(id).t);
-  return { read, rev };
-}
-function merge(other, d) {
-  for (const id of d.read) state.read[id] = other.read[id];
-  for (const id of d.rev) state.rev[id] = other.rev[id];
-  saveState();
-}
-
-function describe(d) {
-  const parts = [];
-  const nr = d.read.length, nw = d.rev.length;
-  if (nr) parts.push(`${nr} ${nr === 1 ? "cambio de estrella" : "cambios de estrellas"}`);
-  if (nw) parts.push(`${nw} ${nw === 1 ? "reseña" : "reseñas"}`);
-  return parts.join(" y ");
-}
-
-function showIncoming(other) {
-  const d = diff(other);
-  const clearHash = () => history.replaceState(null, "", location.pathname + location.search);
-  if (!d.read.length && !d.rev.length) {
-    clearHash();
-    toast("Esta lista ya está al día con la tuya.");
-    return;
+async function flush() {
+  if (!listUrl || flushing) { showSyncState(); return; }
+  flushing = true;
+  showSyncState();
+  try {
+    for (const id of Object.keys(pending)) {
+      const sent = pending[id];
+      const res = await fetch(listUrl, {
+        method: "POST",
+        // Plain text keeps the browser from sending a pre-check that Apps Script can't answer.
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(Object.assign({ id }, sent)),
+      });
+      const body = await res.json();
+      if (!body.ok && !/ya no está/.test(body.error || "")) throw new Error(body.error);
+      const b = books().find(x => x.id === id);
+      if (b && body.ok) Object.assign(b, sent);
+      // Keep anything changed while this request was on its way.
+      if (JSON.stringify(pending[id]) === JSON.stringify(sent)) delete pending[id];
+      savePending();
+    }
+    store.set(STORE_DATA, data);
+    saveFailed = false;
+  } catch {
+    saveFailed = true;   // no signal or a Google hiccup: try again later
   }
-  els.incoming.innerHTML = "";
-  const p = document.createElement("p");
-  p.innerHTML = `<strong>Te han compartido una lista.</strong> Trae ${describe(d)} más recientes que los tuyos.`;
-  const row = document.createElement("div");
-  row.className = "incoming-row";
-  const yes = document.createElement("button");
-  yes.type = "button"; yes.className = "primary"; yes.textContent = "Unir con mi lista";
-  const no = document.createElement("button");
-  no.type = "button"; no.className = "secondary"; no.textContent = "Ahora no";
-  row.append(yes, no);
-  els.incoming.append(p, row);
-  els.incoming.hidden = false;
-  yes.addEventListener("click", () => {
-    merge(other, d); clearHash(); els.incoming.hidden = true;
-    renderChips(); renderList(); toast("Listas unidas.");
-  });
-  no.addEventListener("click", () => { clearHash(); els.incoming.hidden = true; });
+  flushing = false;
+  showSyncState();
+  if (Object.keys(pending).length) { clearTimeout(flushTimer); flushTimer = setTimeout(flush, 30000); }
 }
 
-async function readIncoming() {
-  const m = location.hash.match(new RegExp(`^#${SHARE_KEY}=([A-Za-z0-9_-]+)$`));
-  if (!m) return;
-  try { showIncoming(await decodeState(m[1])); }
-  catch { toast("Ese enlace de lista no se pudo leer. Pide que te lo vuelvan a enviar."); }
+function queueFlush() {
+  showSyncState();
+  clearTimeout(flushTimer);
+  flushTimer = setTimeout(flush, 700);
+}
+
+function showNotice(text) {
+  els.notice.textContent = text;
+  els.notice.hidden = false;
+}
+
+// Stars and reviews saved on the phone by earlier versions go to the sheet once.
+function moveOldData() {
+  if (store.get(STORE_MOVED, false)) return;
+  const oldState = store.get(STORE_OLD_STATE, null);
+  const oldRead = store.get(STORE_OLD_READ, []);
+  for (const id of oldRead) pending[id] = Object.assign({ read: true }, pending[id]);
+  if (oldState) {
+    for (const [id, [on]] of Object.entries(oldState.read || {})) {
+      if (on === 1) pending[id] = Object.assign({ read: true }, pending[id]);
+    }
+    for (const [id, r] of Object.entries(oldState.rev || {})) {
+      pending[id] = Object.assign({}, pending[id], { hearts: r.r || 0, gift: r.g === 1, review: r.n || "" });
+    }
+  }
+  savePending();
+  store.set(STORE_MOVED, true);
+}
+
+/* ---------- Connecting a list and inviting family ---------- */
+
+function validListUrl(text) {
+  try {
+    const u = new URL(text.trim());
+    const fromGoogle = u.protocol === "https:" && u.hostname === "script.google.com" && u.pathname.endsWith("/exec");
+    return (fromGoogle || u.hostname === "localhost") ? u.href : "";
+  } catch { return ""; }
+}
+
+function listFrom(text) {
+  try {
+    const nested = new URL(text.trim()).searchParams.get("lista");
+    if (nested) return validListUrl(nested);
+  } catch { /* not a link */ }
+  return validListUrl(text);
+}
+
+function inviteLink() {
+  return `${location.origin}${location.pathname}?lista=${encodeURIComponent(listUrl)}`;
 }
 
 async function share() {
-  const url = await shareLink();
+  if (!listUrl) {
+    $("share-box").open = true;
+    $("share-box").scrollIntoView({ behavior: "smooth", block: "center" });
+    return;
+  }
+  const url = inviteLink();
   if (navigator.share) {
     try {
-      await navigator.share({ title: "Nuestra lista de 100 libros", text: "Ábrelo para unir nuestras estrellas y reseñas:", url });
+      await navigator.share({ title: "Nuestra lista de libros", text: "Nuestra lista de libros, con estrellas y reseñas compartidas:", url });
       return;
     } catch (e) { if (e && e.name === "AbortError") return; }
   }
+  copyLink(url);
+}
+
+async function copyLink(url) {
+  const out = $("share-out");
   try {
     await navigator.clipboard.writeText(url);
-    toast("Enlace copiado. Envíalo a tu pareja por WhatsApp o correo.");
+    toast("Enlace copiado. Envíalo por WhatsApp o correo.");
   } catch {
-    const box = $("share-box");
-    box.open = true;
-    const out = $("share-out");
     out.value = url; out.hidden = false; out.select();
-    box.scrollIntoView({ behavior: "smooth", block: "center" });
-    toast("Copia el enlace de abajo y envíalo.");
+    $("share-box").open = true;
   }
 }
 
 function setupSharing() {
   $("share").addEventListener("click", share);
-  $("share-copy").addEventListener("click", async () => {
-    const url = await shareLink();
-    const out = $("share-out");
-    try { await navigator.clipboard.writeText(url); toast("Enlace copiado."); }
-    catch { out.value = url; out.hidden = false; out.select(); }
+  $("share-copy").addEventListener("click", () => {
+    if (listUrl) copyLink(inviteLink());
+    else $("share-msg").textContent = "Primero conecta tu lista pegando su enlace aquí abajo.";
   });
-  $("share-paste-go").addEventListener("click", async () => {
-    const text = $("share-paste").value.trim();
-    const msg = $("share-msg");
-    const m = text.match(new RegExp(`#${SHARE_KEY}=([A-Za-z0-9_-]+)`));
-    if (m) {
-      try { showIncoming(await decodeState(m[1])); $("share-paste").value = ""; msg.textContent = ""; window.scrollTo({ top: 0, behavior: "smooth" }); }
-      catch { msg.textContent = "Ese enlace no se pudo leer."; }
-      return;
-    }
-    // Codes from the first version of the app: a list of book numbers like b001,b045.
-    const ids = (text.match(/b\d{3}/g) || []).filter(id => books.some(b => b.id === id) && !isRead(id));
-    if (!ids.length) { msg.textContent = "No reconozco ese texto. Pega el enlace completo que te enviaron."; return; }
-    ids.forEach(id => setRead(id, true));
-    renderChips(); renderList();
-    msg.textContent = `Añadidas ${ids.length} estrellas.`;
+  $("share-connect").addEventListener("click", async () => {
+    const url = listFrom($("share-paste").value);
+    if (!url) { $("share-msg").textContent = "No reconozco ese enlace. Pega el que os enviaron, completo."; return; }
+    connect(url);
     $("share-paste").value = "";
+    $("share-msg").textContent = "";
+    await refresh({ force: true });
+    flush();
+    toast("Lista conectada.");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   });
+}
+
+function connect(url) {
+  listUrl = url;
+  store.set(STORE_LIST, url);
+  $("share-copy").hidden = false;
+  els.notice.hidden = true;
 }
 
 /* ---------- Start ---------- */
@@ -547,22 +622,42 @@ els.q.addEventListener("input", () => {
   searchTimer = setTimeout(() => { query = els.q.value.trim(); renderList(); }, 150);
 });
 
-window.addEventListener("hashchange", readIncoming);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") { refresh(); flush(); }
+});
+window.addEventListener("online", () => { refresh({ force: true }); flush(); });
+window.addEventListener("offline", showSyncState);
+setInterval(() => { if (document.visibilityState === "visible") refresh(); }, REFRESH_EVERY);
 
 async function start() {
-  renderGroups();
-  try {
-    const res = await fetch("data/books.json");
-    books = await res.json();
-  } catch {
-    els.empty.hidden = false;
-    els.empty.textContent = "No se pudo cargar la lista. Comprueba la conexión y vuelve a abrir la página.";
-    return;
-  }
-  renderChips();
-  renderList();
+  moveOldData();
   setupSharing();
-  readIncoming();
+
+  const fromLink = validListUrl(new URLSearchParams(location.search).get("lista") || "");
+  const saved = store.get(STORE_LIST, "");
+  if (fromLink || saved) connect(fromLink || saved);
+
+  // Show the last copy straight away; the sheet can take a few seconds to answer.
+  const cached = store.get(STORE_DATA, null);
+  if (cached && cached.books && cached.books.length) {
+    data = cached;
+  } else {
+    try {
+      data = await (await fetch("data/books.json")).json();
+    } catch {
+      els.empty.hidden = false;
+      els.empty.textContent = "No se pudo cargar la lista. Comprueba la conexión y vuelve a abrir la página.";
+      return;
+    }
+  }
+  renderAll();
+
+  if (listUrl) {
+    await refresh({ force: true });
+    flush();
+  } else {
+    showNotice("Esta es la lista de ejemplo y las estrellas solo se guardan en este móvil. Para compartirlas, abre el enlace de tu familia.");
+  }
 }
 
 start();
