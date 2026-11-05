@@ -610,6 +610,9 @@ function setupSharing() {
 function connect(url) {
   listUrl = url;
   store.set(STORE_LIST, url);
+  // Keep the list in the address, so a home-screen icon added now opens it.
+  // iPhone icons don't share Safari's storage, so they need the link itself.
+  try { history.replaceState(null, "", inviteLink()); } catch { /* not important */ }
   $("share-copy").hidden = false;
   els.notice.hidden = true;
 }
