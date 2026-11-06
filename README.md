@@ -41,7 +41,7 @@ Changes reach the phones the next time the app is opened, or within about two mi
 | Change the library | Edit the **Ajustes** tab, then update **En la biblioteca** in **Libros** |
 | Add an age group | Type a new name in **Grupo**, such as `Bebés (0-2 años)`. The bracket becomes the button label |
 
-**Libros** columns are found by their heading, so you can move them, or add your own, but keep these names:
+**Libros** columns are found by their heading, so you can move them, or add your own, but keep these names. All are required except **Signatura**:
 
 | Column | Meaning |
 |---|---|
@@ -49,6 +49,7 @@ Changes reach the phones the next time the app is opened, or within about two mi
 | Portada | Cover |
 | En la biblioteca | `Sí`, `Parcial` (only another volume or edition), `Revisar` (unclear) or `No` |
 | Título en el catálogo, Notas | Shown on the book's card |
+| Signatura | Optional. Where the book sits on the shelves, shown as a spine label. Write `I GRE aqu (Sala Infantil)`; separate several copies with ` \| ` |
 | Leído, Corazones, Para regalar, Reseña | Filled in from the app, and editable here too |
 | ID | Permanent code for the book. Don't edit it |
 
