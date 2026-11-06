@@ -305,6 +305,33 @@ function reviewEditor(b, onChange) {
   return ed;
 }
 
+// "I GRE aqu (Sala Infantil) | J-N CAR ali (Sala juvenil)" becomes spine-style labels.
+function shelfLine(text) {
+  const p = document.createElement("p");
+  p.className = "shelf";
+  const lbl = document.createElement("span");
+  lbl.className = "shelf-label";
+  lbl.textContent = "Signatura";
+  p.append(lbl);
+  text.split("|").map(s => s.trim()).filter(Boolean).forEach(part => {
+    const m = part.match(/^(.*?)\s*\(([^)]*)\)$/);
+    const item = document.createElement("span");
+    item.className = "shelf-item";
+    const sig = document.createElement("span");
+    sig.className = "sig";
+    sig.textContent = m ? m[1] : part;
+    item.append(sig);
+    if (m && m[2]) {
+      const room = document.createElement("span");
+      room.className = "room";
+      room.textContent = m[2];
+      item.append(room);
+    }
+    p.append(item);
+  });
+  return p;
+}
+
 function bookItem(b, showGroup) {
   const li = document.createElement("li");
   li.className = "book";
@@ -323,6 +350,7 @@ function bookItem(b, showGroup) {
   tag.textContent = showGroup ? [groupParts(b.g).name, number].filter(Boolean).join(" · ") : number;
   meta.append(tag);
   info.append(h, a, meta);
+  if (b.shelf) info.append(shelfLine(b.shelf));
 
   if (b.c && b.c !== b.t && b.s !== "No") {
     const c = document.createElement("p"); c.className = "catalog";
@@ -391,7 +419,7 @@ function bookItem(b, showGroup) {
 function visibleBooks() {
   if (query) {
     const q = norm(query);
-    return books().filter(b => norm(`${b.t} ${b.a} ${b.c} ${reviewText(b)}`).includes(q));
+    return books().filter(b => norm(`${b.t} ${b.a} ${b.c} ${b.shelf || ""} ${reviewText(b)}`).includes(q));
   }
   const f = currentFilter();
   const list = books().filter(b => (f.all || b.g === prefs.group) && f.test(b));

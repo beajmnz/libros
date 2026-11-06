@@ -6,7 +6,7 @@
  * stars and reviews with POST.
  *
  * Columns are found by their heading in the first row, so they can be moved,
- * and extra columns are ignored.
+ * and extra columns are ignored. «Signatura» is optional.
  */
 
 const TAB_BOOKS = 'Libros';
@@ -27,6 +27,11 @@ const HEADINGS = {
   hearts: 'Corazones',
   gift: 'Para regalar',
   review: 'Reseña',
+};
+
+/** Columns a sheet may leave out. */
+const OPTIONAL = {
+  shelf: 'Signatura',
 };
 
 function doGet() {
@@ -72,6 +77,10 @@ function columns_(sheet) {
     const at = headings.indexOf(HEADINGS[key]);
     if (at === -1) throw new Error('Falta la columna «' + HEADINGS[key] + '».');
     cols[key] = at + 1;
+  });
+  Object.keys(OPTIONAL).forEach(function (key) {
+    const at = headings.indexOf(OPTIONAL[key]);
+    if (at !== -1) cols[key] = at + 1;
   });
   return cols;
 }
@@ -123,7 +132,7 @@ function readAll_() {
     const seen = new Set();
 
     values.forEach(function (row, i) {
-      const cell = function (key) { return row[cols[key] - 1]; };
+      const cell = function (key) { return cols[key] ? row[cols[key] - 1] : ''; };
       const title = String(cell('title')).trim();
       if (!title) return;
 
@@ -145,6 +154,7 @@ function readAll_() {
         s: String(cell('status')).trim() || 'No',
         c: String(cell('catalog')).trim(),
         note: String(cell('notes')).trim(),
+        shelf: String(cell('shelf')).trim(),
         cover: coverUrl_(formulas[i][cols.cover - 1], cell('cover')),
         read: cell('read') === true,
         hearts: Number(cell('hearts')) || 0,
